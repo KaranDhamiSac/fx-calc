@@ -999,7 +999,8 @@
   function haptic() {
     if (!S.settings.haptic) return;
     try {
-      if (navigator.vibrate) navigator.vibrate(6);
+      if (window.AndroidApp) window.AndroidApp.tick(); // native Android app
+      else if (navigator.vibrate) navigator.vibrate(6);
       else if (hapticEl) hapticEl.click(); // iOS 18+: toggling a switch input gives a haptic tick
     } catch (e) { /* ignore */ }
   }
@@ -1110,6 +1111,13 @@
   U.stack = [makeBase(S.mode)];
   if (U.comp && S.history.length) U.comp.hist = S.history.length - 1;
   render();
+
+  // Android back button: close the top menu/screen; returns false on the main screen so the app exits.
+  window.__fxBack = () => {
+    U.shift = U.alpha = U.sto = false;
+    if (U.stack.length > 1) { pop(); afterAction(); return true; }
+    return false;
+  };
 
   // Exposed for automated tests
   window.__fx = { S, U, dispatch, press, render };
