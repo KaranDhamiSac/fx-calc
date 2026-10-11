@@ -13,6 +13,8 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      - uses: actions/checkout@v4
+
       - name: Download latest APK
         env:
           GH_TOKEN: ${{ github.token }}
@@ -26,26 +28,7 @@ jobs:
           arch: x86_64
           profile: pixel_6
           disable-animations: true
-          script: |
-            set -x
-            mkdir -p shots
-            adb install -r fx-calc.apk
-            START=$(date +%s)
-            adb shell am start -W -n io.github.karandhamisac.fxcalc/.MainActivity
-            for i in $(seq 1 60); do adb exec-out screencap -p > shots/1-launch.png; [ $(stat -c%s shots/1-launch.png) -gt 150000 ] && break; sleep 1; done
-            echo "first launch rendered after $(( $(date +%s) - START ))s" | tee shots/timing.txt
-            t() { adb shell input tap $1 $2; sleep 0.6; }
-            t 118 2054; t 104 1199; t 540 2054; t 751 2054; t 118 2054; t 104 1199; t 540 1866; t 962 2242
-            sleep 1; adb exec-out screencap -p > shots/2-result.png
-            t 805 911; sleep 1; adb exec-out screencap -p > shots/3-menu.png
-            adb shell input keyevent KEYCODE_BACK; sleep 2; adb exec-out screencap -p > shots/4-after-back.png
-            adb shell am force-stop io.github.karandhamisac.fxcalc
-            START=$(date +%s)
-            adb shell am start -W -n io.github.karandhamisac.fxcalc/.MainActivity
-            for i in $(seq 1 30); do adb exec-out screencap -p > shots/5.png; [ $(stat -c%s shots/5.png) -gt 150000 ] && break; sleep 1; done
-            echo "second launch rendered after $(( $(date +%s) - START ))s" | tee -a shots/timing.txt
-            t 540 882; sleep 1; adb exec-out screencap -p > shots/5-history-after-restart.png
-            adb logcat -d | grep -iE "chromium|console|AndroidRuntime" | tail -100 > shots/logcat.txt || true
+          script: bash .github/emulator-check.sh
 
       - uses: actions/upload-artifact@v4
         if: always()
