@@ -1,0 +1,57 @@
+name: Android emulator check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  emulator:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Download latest APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download --repo ${{ github.repository }} --pattern fx-calc.apk
+
+      - name: Run on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            mkdir -p shots
+            adb install -r fx-calc.apk
+            adb shell am start -W -n io.github.karandhamisac.fxcalc/.MainActivity
+            sleep 8
+            adb exec-out screencap -p > shots/1-launch.png
+            adb shell input text "1/3+1/6"
+            adb shell input keyevent KEYCODE_ENTER
+            sleep 2
+            adb exec-out screencap -p > shots/2-result.png
+            adb shell input text "m"
+            sleep 2
+            adb exec-out screencap -p > shots/3-menu.png
+            adb shell input keyevent KEYCODE_BACK
+            sleep 2
+            adb exec-out screencap -p > shots/4-after-back.png
+            adb shell am force-stop io.github.karandhamisac.fxcalc
+            adb shell am start -W -n io.github.karandhamisac.fxcalc/.MainActivity
+            sleep 6
+            adb shell input keyevent KEYCODE_DPAD_UP
+            sleep 2
+            adb exec-out screencap -p > shots/5-history-after-restart.png
+            adb logcat -d | grep -iE "chromium|fxcalc|AndroidRuntime" | tail -100 > shots/logcat.txt || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: emulator-shots
+          path: shots/
