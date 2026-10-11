@@ -3,6 +3,8 @@
 set -x
 mkdir -p shots
 adb install -r fx-calc.apk
+# Let the freshly booted emulator finish its own startup work before timing our launch.
+sleep 60
 shot() { adb exec-out screencap -p > "shots/$1.png"; }
 wait_render() { for i in $(seq 1 60); do shot "$1"; [ "$(stat -c%s "shots/$1.png")" -gt 150000 ] && return; sleep 1; done; }
 t() { adb shell input tap "$1" "$2"; sleep 0.6; }
@@ -24,4 +26,10 @@ adb shell am start -W -n io.github.karandhamisac.fxcalc/.MainActivity
 wait_render 5-relaunch
 echo "second launch rendered after $(( $(date +%s) - start ))s" | tee -a shots/timing.txt
 t 540 882; sleep 1; shot 6-history-after-restart
+# A true first launch again (app data wiped) on the settled system.
+adb shell pm clear io.github.karandhamisac.fxcalc
+start=$(date +%s)
+adb shell am start -W -n io.github.karandhamisac.fxcalc/.MainActivity
+wait_render 7-fresh-first-launch
+echo "fresh first launch (data cleared) rendered after $(( $(date +%s) - start ))s" | tee -a shots/timing.txt
 adb logcat -d | grep -iE "chromium|console|AndroidRuntime" | tail -100 > shots/logcat.txt || true
