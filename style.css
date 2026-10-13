@@ -142,6 +142,15 @@ body { position: fixed; inset: 0; }
 .x10 sup { font-size: .72em; vertical-align: .55em; }
 .sgn { margin-right: 1px; }
 
+/* matrices, vectors, Base-N */
+.mat { border-collapse: separate; border-spacing: 0; border-left: 2px solid currentColor; border-right: 2px solid currentColor; border-radius: 4px; font-size: .62em; margin-left: auto; }
+.mat td { padding: 1px 7px; text-align: right; white-space: nowrap; }
+.mat .fr { font-size: .8em; }
+.baseall { display: grid; grid-template-columns: auto auto; gap: 1px 10px; font-size: 11px; margin-top: auto; opacity: .8; font-family: inherit; }
+.baseall span:last-child { grid-column: 1 / -1; }
+.baseall + .result { margin-top: 2px; }
+.k.modek { color: #9fe0ff; }
+
 .error {
   margin: auto;
   text-align: center;

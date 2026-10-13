@@ -94,6 +94,22 @@
   ];
   CONSTS.forEach(([id, d, name, v]) => def('k:' + id, d, 'const', { v, name }));
 
+  // Complex / Matrix / Vector / Base-N tokens (evaluated by engine-x.js)
+  def('i', 'i', 'const', { ext: true });
+  def('∠', '∠', 'perm');
+  def('dot', '·', 'op');
+  ['A', 'B', 'C', 'D', 'Ans'].forEach(n => { def('Mat' + n, 'Mat' + n, 'const', { ext: true }); def('Vct' + n, 'Vct' + n, 'const', { ext: true }); });
+  [
+    ['arg', 'arg('], ['conj', 'Conjg('], ['rep', 'ReP('], ['imp', 'ImP('],
+    ['det', 'det('], ['trn', 'Trn('], ['ident', 'Identity('], ['ref', 'Ref('], ['rref', 'Rref('],
+    ['angle', 'Angle('], ['unitv', 'UnitV('], ['bnot', 'Not('], ['bneg', 'Neg(']
+  ].forEach(([f, d]) => def(f + '(', d, 'func', { f, ext: true }));
+  def('toPolar', '▶r∠θ', 'post', { f: 'toPolar' });
+  def('toRect', '▶a+bi', 'post', { f: 'toRect' });
+  ['A', 'B', 'C', 'D', 'E', 'F'].forEach(h => def('h' + h, h, 'hex'));
+  [['and', ' and '], ['or', ' or '], ['xor', ' xor '], ['xnor', ' xnor ']].forEach(([k, d]) => def(k, d, 'logic'));
+  [['pd', 'd'], ['ph', 'h'], ['pb', 'b'], ['po', 'o']].forEach(([k, d]) => def(k, d, 'bpre'));
+
   const VARS = ['A', 'B', 'C', 'D', 'E', 'F', 'X', 'Y', 'M'];
   VARS.forEach(n => def('v' + n, n, 'var', { n }));
 
@@ -132,7 +148,7 @@
     }
     function mul() {
       let a = imp();
-      while (peek() === '*' || peek() === '/') {
+      while (peek() === '*' || peek() === '/' || peek() === 'dot') {
         const op = peek(), p = i++;
         a = { k: 'bin', op, a, b: imp(), p };
       }
@@ -149,7 +165,7 @@
     }
     function perm() {
       let a = unary();
-      while (peek() === 'P' || peek() === 'C') {
+      while (peek() === 'P' || peek() === 'C' || peek() === '∠') {
         const op = peek(), p = i++;
         a = { k: 'bin', op, a, b: unary(), p };
       }
@@ -342,10 +358,11 @@
     const ev = nd => evaluate(nd, ctx);
     switch (node.k) {
       case 'num': return node.v;
-      case 'var': return ctx.vars[node.n] || 0;
+      case 'var': return realOnly(ctx.vars[node.n] || 0, node.p);
       case 'const': {
-        if (node.n === 'Ans') return ctx.ans || 0;
-        if (node.n === 'PreAns') return ctx.preAns || 0;
+        if (node.n === 'Ans') return realOnly(ctx.ans || 0, node.p);
+        if (node.n === 'PreAns') return realOnly(ctx.preAns || 0, node.p);
+        if (TOK[node.n].ext) throw new CalcError(SYN, node.p);
         if (node.n === 'Ran#') return Math.floor(Math.random() * 1000) / 1000;
         return TOK[node.n].v;
       }
@@ -361,6 +378,7 @@
           case '^(': return chk(powReal(a, b, p), p);
           case 'xrt(': return chk(rootReal(a, b, p), p);
           case 'P': return chk(nPr(a, b, p), p);
+          case '∠': case 'dot': throw new CalcError(SYN, p);
           case 'C': return chk(nCr(a, b, p), p);
         }
         break;
@@ -377,12 +395,20 @@
           case 'radm': return u === 'R' ? a : fromRad(a, u);
           case 'gradm': return u === 'G' ? a : fromRad(toRad(a, 'G'), u);
           case 'cv': return chk(typeof node.conv === 'function' ? node.conv(a) : a * node.conv, p);
+          case 'toPolar': case 'toRect': throw new CalcError(SYN, p);
         }
         break;
       }
       case 'fn': return evalFn(node, ctx);
     }
     throw new CalcError(SYN, node.p);
+  }
+
+  // Complex values stored in variables (from Complex mode) are not usable in real calculations.
+  function realOnly(v, p) {
+    if (typeof v === 'number') return v;
+    if (v && v.t === 'c' && v.im === 0) return v.re;
+    return mathErr(p);
   }
 
   function withVar(ctx, name, value, fn) {
@@ -918,7 +944,8 @@
   }
 
   const api = {
-    TOK, CONV, CONSTS, VARS, CalcError, SYN, MATH, SOLVE_ERR, ARG,
+    TOK, CONV, CONSTS, VARS, CalcError, SYN, MATH, SOLVE_ERR, ARG, mathErr, chk,
+    toRad, fromRad, sinA, cosA, tanA, powReal,
     parse, evaluate, finalize, round15, varsIn, solveNumeric, integrate, derivative,
     solveLinear, polyRoots, approxFrac, exactForm, quadExact, fmtDecimal, fmtEng, engBase,
     roundDisplay, toDMS, factorize, stats1, stats2, gcd

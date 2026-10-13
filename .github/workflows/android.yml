@@ -8,6 +8,7 @@ on:
       - '*.js'
       - '*.css'
       - 'icons/**'
+      - 'tests/**'
       - 'android/**'
       - '.github/workflows/android.yml'
   workflow_dispatch:
@@ -20,6 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Engine tests
+        run: node tests/engine.test.js
 
       - uses: actions/setup-java@v4
         with:

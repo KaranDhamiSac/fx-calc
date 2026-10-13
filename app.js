@@ -1,7 +1,8 @@
-/* fx Calc UI: keypad, LCD screens, modes (Calculate / Statistics / Table / Equation). */
+/* fx Calc UI: keypad, LCD screens, and modes (Calculate, Complex, Base-N, Matrix, Vector, Statistics,
+   Distribution, Table, Equation, Inequality, Ratio). */
 (function () {
   'use strict';
-  const E = window.CalcEngine, TOK = E.TOK;
+  const E = window.CalcEngine, TOK = E.TOK, X = window.CalcEngineX;
   const $ = s => document.querySelector(s);
   const MINUS = '−';
 
@@ -14,8 +15,11 @@
     vars: freshVars(), ans: 0, preAns: 0, history: [], mode: 'COMP',
     stat: { type: '1', x: [], y: [] },
     table: { f: [], g: [], start: 1, end: 5, step: 1 },
-    eqn: { kind: 'sim', n: 2, sim: {}, poly: {} }
+    eqn: { kind: 'sim', n: 2, sim: {}, poly: {} },
+    base: 'd', cfmt: 'rect', mats: {}, vcts: {}, matAns: null, vctAns: null, histX: {},
+    dist: {}, ineq: { n: 2, op: '>', coef: {} }, ratio: { kind: 'x3', vals: [1, 2, 1] }
   };
+  const EXTRA_KEYS = ['base', 'cfmt', 'mats', 'vcts', 'matAns', 'vctAns', 'histX', 'dist', 'ineq', 'ratio'];
   try {
     const saved = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
     if (saved) {
@@ -26,24 +30,29 @@
       if (saved.stat) Object.assign(S.stat, saved.stat);
       if (saved.table) Object.assign(S.table, saved.table);
       if (saved.eqn) Object.assign(S.eqn, saved.eqn);
+      EXTRA_KEYS.forEach(k => { if (saved[k] !== undefined && saved[k] !== null) S[k] = saved[k]; });
     }
   } catch (e) { /* storage unavailable */ }
   function save() {
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify({
         settings: S.settings, vars: S.vars, ans: S.ans, preAns: S.preAns,
-        history: S.history.slice(-40), mode: S.mode, stat: S.stat, table: S.table, eqn: S.eqn
+        history: S.history.slice(-40), mode: S.mode, stat: S.stat, table: S.table, eqn: S.eqn,
+        ...Object.fromEntries(EXTRA_KEYS.map(k => [k, S[k]]))
       }));
     } catch (e) { /* ignore */ }
   }
 
-  const U = { shift: false, alpha: false, sto: false, stack: [], comp: null };
+  const U = { shift: false, alpha: false, sto: false, stack: [], comp: null, cx: {} };
   const top = () => U.stack[U.stack.length - 1];
   const push = s => { U.stack.push(s); };
   const pop = () => { if (U.stack.length > 1) U.stack.pop(); };
   const popMenus = () => { while (U.stack.length > 1 && top().isMenu) U.stack.pop(); };
 
   const makeCtx = () => ({ vars: S.vars, angle: S.settings.angle, ans: S.ans, preAns: S.preAns, fmt: S.settings.fmt, multi: null });
+  const makeCtxX = kind => Object.assign(makeCtx(), {
+    cplx: kind === 'CMPLX', mats: S.mats, vcts: S.vcts, matAns: S.matAns, vctAns: S.vctAns, cfmt: null
+  });
   function evalTokens(tokens) {
     const node = E.parse(tokens);
     if (node.k === 'eq') throw new E.CalcError(E.SYN, node.p);
@@ -75,6 +84,7 @@
   }
   function numHTML(v, o) {
     o = o || {};
+    if (v && v.t === 'c') return complexHTML(v.re, v.im, o);
     if (typeof v !== 'number') return esc(v);
     if (o.dms) {
       const t = E.toDMS(v);
@@ -101,6 +111,32 @@
     const imPart = (imAbs === 1 ? '' : numHTML(imAbs, o)) + '<i>i</i>';
     if (Math.abs(re) < 1e-14 * imAbs) return (im < 0 ? MINUS : '') + imPart;
     return numHTML(re, o) + (im < 0 ? ` ${MINUS} ` : ' + ') + imPart;
+  }
+
+  function polarHTML(z, o) {
+    const r = E.round15(Math.hypot(X.RE(z), X.IM(z)));
+    const th = E.round15(E.fromRad(Math.atan2(X.IM(z), X.RE(z)), S.settings.angle));
+    return numHTML(r, o) + '∠' + numHTML(th, o);
+  }
+  function matrixHTML(m, o) {
+    const cell = v => `<td>${numHTML(v, o)}</td>`;
+    return `<table class="mat">${m.a.map(r => `<tr>${r.map(cell).join('')}</tr>`).join('')}</table>`;
+  }
+  // Any result value: real, complex, matrix or vector.
+  function valueHTML(v, o) {
+    o = o || {};
+    if (X.isM(v)) return matrixHTML(v, o);
+    if (X.isV(v)) return `<table class="mat vec"><tr>${v.a.map(x => `<td>${numHTML(x, o)}</td>`).join('')}</tr></table>`;
+    if (X.isC(v)) return (o.cfmt || S.cfmt) === 'polar' ? polarHTML(v, o) : complexHTML(v.re, v.im, o);
+    if (typeof v === 'number' && (o.cfmt === 'polar')) return polarHTML(v, o);
+    return numHTML(v, o);
+  }
+  const BASE_NAME = { d: 'Dec', h: 'Hex', b: 'Bin', o: 'Oct' };
+  function baseHTML(v) {
+    const main = X.fmtBase(v, S.base);
+    const others = ['d', 'h', 'o', 'b'].filter(b => b !== S.base)
+      .map(b => `<span><b>${BASE_NAME[b].toUpperCase()}</b> ${X.fmtBase(v, b)}</span>`).join('');
+    return `<div class="baseall">${others}</div><div class="result ${S.base === 'b' ? 'mid' : ''}">${main}</div>`;
   }
 
   // ------------------------------------------------------------ expression editor
@@ -137,8 +173,15 @@
 
   // ------------------------------------------------------------ Calculate screen
   class CompScreen {
-    constructor() { this.ed = new Editor(); this.phase = 'edit'; this.res = null; this.hist = -1; this.err = null; }
-    get title() { return ''; }
+    // kind: COMP (real), CMPLX, BASE, MATRIX or VECTOR
+    constructor(kind) {
+      this.kind = kind || 'COMP';
+      this.ed = new Editor(); this.phase = 'edit'; this.res = null; this.hist = -1; this.err = null;
+    }
+    get H() { return this.kind === 'COMP' ? S.history : (S.histX[this.kind] || (S.histX[this.kind] = [])); }
+    optn() {
+      ({ COMP: openOptn, CMPLX: openCplxOptn, BASE: openBaseOptn, MATRIX: () => openMatVctOptn('mat'), VECTOR: () => openMatVctOptn('vct') })[this.kind]();
+    }
 
     html() {
       if (this.phase === 'error') {
@@ -161,7 +204,9 @@
       if (r.fact) {
         return `<div class="result mid">${r.fact.map(([p, e]) => p + (e > 1 ? `<sup>${e}</sup>` : '')).join('×')}</div>`;
       }
-      return `<div class="result">${numHTML(r.value, r)}</div>`;
+      if (this.kind === 'BASE') return baseHTML(r.value);
+      const big = X.isM(r.value) || X.isV(r.value) || X.isC(r.value);
+      return `<div class="result ${big ? 'mid' : ''}">${valueHTML(r.value, r)}</div>`;
     }
 
     showError(e) {
@@ -174,12 +219,14 @@
       this.res = Object.assign({ value: v, decimal: S.settings.io === 'dec', mixed: S.settings.frac === 'abc', eng: null, dms: false }, extra || {});
     }
     pushHistory(v) {
-      S.history.push({ t: this.ed.t.slice(), v });
-      if (S.history.length > 40) S.history.shift();
-      this.hist = S.history.length - 1;
+      const H = this.H;
+      H.push({ t: this.ed.t.slice(), v });
+      if (H.length > 40) H.shift();
+      this.hist = H.length - 1;
     }
     evaluate(decimal) {
       if (this.ed.empty) return;
+      if (this.kind !== 'COMP') { this.evaluateX(decimal); return; }
       try {
         const ctx = makeCtx();
         const node = E.parse(this.ed.t);
@@ -188,6 +235,23 @@
         setAns(v);
         this.pushHistory(v);
         this.showResult(v, { multi: ctx.multi, decimal: decimal || S.settings.io === 'dec' });
+      } catch (e) { this.showError(e); }
+    }
+    evaluateX(decimal) {
+      try {
+        const ctx = makeCtxX(this.kind);
+        let v;
+        if (this.kind === 'BASE') v = X.evalBase(this.ed.t, S.base, ctx);
+        else {
+          const node = E.parse(this.ed.t);
+          if (node.k === 'eq') throw new E.CalcError(E.SYN, node.p);
+          v = X.finalize(X.evaluate(node, ctx));
+        }
+        if (X.isM(v)) S.matAns = v;
+        else if (X.isV(v)) S.vctAns = v;
+        else setAns(v);
+        this.pushHistory(v);
+        this.showResult(v, { decimal: decimal || S.settings.io === 'dec', cfmt: ctx.cfmt });
       } catch (e) { this.showError(e); }
     }
     // Value to use for STO / M+: current result, or evaluate what is typed.
@@ -202,23 +266,25 @@
     }
     store(name) {
       const v = this.currentValue();
-      if (v === null) return;
+      if (v === null || X.isM(v) || X.isV(v)) return;
       S.vars[name] = v;
       this.res.stored = name;
     }
     memAdd(sign) {
       const v = this.currentValue();
-      if (v === null) return;
+      if (typeof v !== 'number' || typeof S.vars.M !== 'number') return;
       S.vars.M = E.round15(S.vars.M + sign * v);
     }
     startNew(k) {
       const kind = TOK[k].kind;
-      const continues = ['op', 'post', 'pow', 'perm', 'frac'].includes(kind) && k !== 'xrt(';
-      this.ed = new Editor(continues ? ['Ans', k] : [k]);
+      const continues = ['op', 'post', 'pow', 'perm', 'frac', 'logic'].includes(kind) && k !== 'xrt(';
+      const prev = this.res && this.res.value;
+      const ans = X.isM(prev) ? 'MatAns' : X.isV(prev) ? 'VctAns' : 'Ans';
+      this.ed = new Editor(continues ? [ans, k] : [k]);
       this.phase = 'edit';
     }
     showHistory(i) {
-      const h = S.history[i];
+      const h = this.H[i];
       if (!h) return;
       this.hist = i;
       this.ed = new Editor(h.t);
@@ -247,10 +313,10 @@
           break;
         case 'up':
           if (this.phase === 'result') this.showHistory(this.hist - 1 >= 0 ? this.hist - 1 : this.hist);
-          else if (this.ed.empty && S.history.length) this.showHistory(S.history.length - 1);
+          else if (this.ed.empty && this.H.length) this.showHistory(this.H.length - 1);
           break;
         case 'down':
-          if (this.phase === 'result' && this.hist < S.history.length - 1) this.showHistory(this.hist + 1);
+          if (this.phase === 'result' && this.hist < this.H.length - 1) this.showHistory(this.hist + 1);
           break;
         case 'del':
           if (this.phase === 'result') { this.phase = 'edit'; this.ed.c = this.ed.t.length; }
@@ -279,14 +345,14 @@
           break;
         case 'eng': case 'engL':
           if (this.phase === 'edit' && !this.ed.empty) this.evaluate();
-          if (this.phase === 'result' && !r.solve && !r.multi) {
+          if (this.phase === 'result' && !this.res.solve && !this.res.multi && typeof this.res.value === 'number' && this.kind !== 'BASE') {
             const rr = this.res;
             if (rr.eng === null) rr.eng = E.engBase(rr.value) + (a === 'engL' ? 3 : 0);
             else rr.eng += a === 'eng' ? -3 : 3;
           }
           break;
         case 'dms':
-          if (this.phase === 'result') { r.dms = !r.dms; r.eng = null; }
+          if (this.phase === 'result') { if (typeof r.value === 'number') { r.dms = !r.dms; r.eng = null; } }
           else this.ed.insert('°');
           break;
         case 'fact':
@@ -299,8 +365,8 @@
           break;
         case 'mplus': this.memAdd(1); break;
         case 'mminus': this.memAdd(-1); break;
-        case 'calc': this.calc(); break;
-        case 'solve': this.solve(); break;
+        case 'calc': if (this.kind === 'COMP') this.calc(); break;
+        case 'solve': if (this.kind === 'COMP') this.solve(); break;
       }
     }
 
@@ -451,7 +517,7 @@
     constructor(title, rows, opt) {
       opt = opt || {};
       this.isMenu = !!opt.isMenu;
-      this.title = title; this.rows = rows; this.sel = 0; this.opt = opt;
+      this.title = title; this.rows = rows; this.sel = opt.sel || 0; this.opt = opt;
     }
     html() {
       return `<div class="title"><span>${this.title}</span><span class="hint">${this.opt.hint || 'AC: back'}</span></div><div class="list">` +
@@ -711,6 +777,26 @@
         { label: 'ax⁴+bx³+cx²+dx+e', k: '4', act: pick('poly', 4) }], { one: true })) }
     ], { one: true });
   }
+  // Exact roots of ax²+bx+c as [{v, im?, h}] (largest real root first), or null.
+  function quadRootsHTML(c) {
+    if (S.settings.io === 'dec') return null;
+    const ex = E.quadExact(c[0], c[1], c[2]);
+    if (!ex) return null;
+    const shown = ex.map(r => {
+      if (r.real !== undefined) return { v: r.real, h: numHTML(E.round15(r.real)) };
+      if (r.complex) {
+        const g = E.gcd(Math.abs(r.B), r.C);
+        const im = exactHTML({ t: 'surd', s: 1, k: Math.abs(r.B) / g, m: r.m, d: r.C / g });
+        const re = r.A === 0 ? '' : numHTML(r.A / r.C) + (r.B < 0 ? ` ${MINUS} ` : ' + ');
+        return { v: r.A / r.C, im: r.B, h: re + (r.A === 0 && r.B < 0 ? MINUS : '') + im + '<i>i</i>' };
+      }
+      const top = (r.A !== 0 ? r.A : '') + (r.B < 0 ? MINUS : (r.A !== 0 ? '+' : '')) + surdHTML(Math.abs(r.B), r.m);
+      return { v: (r.A + r.B * Math.sqrt(r.m)) / r.C, h: neg(r.C > 1 ? fr(top, r.C) : top) };
+    });
+    if (!shown[0].im) shown.sort((x, y) => y.v - x.v);
+    return shown;
+  }
+
   function solveEqn() {
     const q = S.eqn, M = eqnMatrix();
     let rows = [];
@@ -723,24 +809,7 @@
       const c = M[0].slice();
       if (c[0] === 0) { push(new ListScreen('Polynomial', [['Math ERROR', 'a ≠ 0 required']])); return; }
       const deg = c.length - 1;
-      let shown = null;
-      if (deg === 2 && S.settings.io !== 'dec') {
-        const ex = E.quadExact(c[0], c[1], c[2]);
-        if (ex) {
-          shown = ex.map(r => {
-            if (r.real !== undefined) return { v: r.real, h: numHTML(E.round15(r.real)) };
-            if (r.complex) {
-              const g = E.gcd(Math.abs(r.B), r.C);
-              const im = exactHTML({ t: 'surd', s: 1, k: Math.abs(r.B) / g, m: r.m, d: r.C / g });
-              const re = r.A === 0 ? '' : numHTML(r.A / r.C) + (r.B < 0 ? ` ${MINUS} ` : ' + ');
-              return { v: r.A / r.C, im: r.B, h: re + (r.A === 0 && r.B < 0 ? MINUS : '') + im + '<i>i</i>' };
-            }
-            const top = (r.A !== 0 ? r.A : '') + (r.B < 0 ? MINUS : (r.A !== 0 ? '+' : '')) + surdHTML(Math.abs(r.B), r.m);
-            return { v: (r.A + r.B * Math.sqrt(r.m)) / r.C, h: neg(r.C > 1 ? fr(top, r.C) : top) };
-          });
-          if (!shown[0].im) shown.sort((a, b) => b.v - a.v);
-        }
-      }
+      let shown = deg === 2 ? quadRootsHTML(c) : null;
       if (!shown) {
         const roots = E.polyRoots(c).sort((a, b) => (a.im === 0) !== (b.im === 0) ? (a.im === 0 ? -1 : 1) : (b.re - a.re) || (b.im - a.im));
         shown = roots.map(r => ({ h: complexHTML(E.round15(r.re), E.round15(r.im), { decimal: S.settings.io === 'dec' || r.im !== 0 }) }));
@@ -755,11 +824,213 @@
     push(new ListScreen('Solution  ▲▼', rows, { hint: 'AC: edit' }));
   }
 
+  // ------------------------------------------------------------ Matrix / Vector definitions
+  const DIMS = n => Array.from({ length: n }, (_, i) => ({ label: String(i + 1), k: String(i + 1) }));
+  function defineMatVct(type, name) {
+    const store = type === 'mat' ? S.mats : S.vcts;
+    if (type === 'vct') {
+      push(new MenuScreen(`Vct${name}: Dimension?`, [2, 3].map(n => ({
+        label: n + ' dimensions', k: String(n),
+        act: () => { store[name] = { t: 'v', a: new Array(n).fill(0) }; save(); popMenus(); editMatVct(type, name); }
+      })), { one: true }));
+      return;
+    }
+    push(new MenuScreen(`Mat${name}: Rows?`, DIMS(4).map((it, i) => Object.assign(it, {
+      label: (i + 1) + ' row' + (i ? 's' : ''),
+      act: () => push(new MenuScreen(`Mat${name}: ${i + 1} rows, Columns?`, DIMS(4).map((jt, j) => Object.assign(jt, {
+        label: (j + 1) + ' column' + (j ? 's' : ''),
+        act: () => {
+          store[name] = { t: 'm', a: Array.from({ length: i + 1 }, () => new Array(j + 1).fill(0)) };
+          save(); popMenus(); editMatVct(type, name);
+        }
+      })), { one: false }))
+    })), { one: false }));
+  }
+  function editMatVct(type, name) {
+    const store = type === 'mat' ? S.mats : S.vcts;
+    const m = store[name];
+    if (!m) { defineMatVct(type, name); return; }
+    const isMat = type === 'mat';
+    const rows = isMat ? m.a : [m.a];
+    const title = isMat ? `Mat${name} (${m.a.length}×${m.a[0].length})` : `Vct${name} (${m.a.length}D)`;
+    push(new GridScreen({
+      title, hint: 'AC: done', dir: 'right',
+      cols: rows[0].map((_, j) => String(j + 1)),
+      index: isMat,
+      rows: () => rows.length,
+      get: (r, c) => rows[r][c],
+      set: (r, c, v) => { rows[r][c] = v; },
+      onAC: () => pop(),
+      footHint: '[=] next cell'
+    }));
+  }
+  function pickName(title, type, then) {
+    const pre = type === 'mat' ? 'Mat' : 'Vct', store = type === 'mat' ? S.mats : S.vcts;
+    return new MenuScreen(title, ['A', 'B', 'C', 'D'].map(n => {
+      const m = store[n];
+      const info = !m ? 'undefined' : type === 'mat' ? `${m.a.length}×${m.a[0].length}` : `${m.a.length}D`;
+      return { label: `${pre}${n} <span class="hint">${info}</span>`, act: () => { popMenus(); then(n); } };
+    }), { one: true });
+  }
+  function openMatVctOptn(type) {
+    const isMat = type === 'mat', pre = isMat ? 'Mat' : 'Vct', what = isMat ? 'Matrix' : 'Vector';
+    const items = [
+      { label: 'Define ' + what, act: () => push(pickName('Define ' + what, type, n => defineMatVct(type, n))) },
+      { label: 'Edit ' + what, act: () => push(pickName('Edit ' + what, type, n => editMatVct(type, n))) }
+    ].concat(['A', 'B', 'C', 'D', 'Ans'].map(n => ({ label: pre + n, act: () => insertTok(pre + n) })));
+    if (isMat) {
+      items.push({ label: 'Determinant', act: () => insertTok('det(') }, { label: 'Transposition', act: () => insertTok('trn(') },
+        { label: 'Identity', act: () => insertTok('ident(') }, { label: 'Row Echelon', act: () => insertTok('ref(') },
+        { label: 'Reduced Row Ech.', act: () => insertTok('rref(') }, { label: 'Abs (elementwise)', act: () => insertTok('abs(') });
+    } else {
+      items.push({ label: 'Dot Product ·', act: () => insertTok('dot') }, { label: 'Angle', act: () => insertTok('angle(') },
+        { label: 'Unit Vector', act: () => insertTok('unitv(') }, { label: 'Abs (length)', act: () => insertTok('abs(') });
+    }
+    push(new MenuScreen('OPTN', items, { one: false }));
+  }
+  function openCplxOptn() {
+    push(new MenuScreen('OPTN', [
+      { label: '<i>i</i> (imaginary)', act: () => insertTok('i') },
+      { label: '∠ (polar entry)', act: () => insertTok('∠') },
+      { label: 'Argument', act: () => insertTok('arg(') },
+      { label: 'Conjugate', act: () => insertTok('conj(') },
+      { label: 'Real Part', act: () => insertTok('rep(') },
+      { label: 'Imaginary Part', act: () => insertTok('imp(') },
+      { label: '▶r∠θ', act: () => insertTok('toPolar') },
+      { label: '▶a+bi', act: () => insertTok('toRect') }
+    ], { one: false }));
+  }
+  function openBaseOptn() {
+    push(new MenuScreen('OPTN', [
+      { label: 'and', act: () => insertTok('and') }, { label: 'or', act: () => insertTok('or') },
+      { label: 'xor', act: () => insertTok('xor') }, { label: 'xnor', act: () => insertTok('xnor') },
+      { label: 'Not(', act: () => insertTok('bnot(') }, { label: 'Neg(', act: () => insertTok('bneg(') },
+      { label: 'd (decimal)', act: () => insertTok('pd') }, { label: 'h (hex)', act: () => insertTok('ph') },
+      { label: 'b (binary)', act: () => insertTok('pb') }, { label: 'o (octal)', act: () => insertTok('po') }
+    ], { one: false }));
+  }
+
+  // ------------------------------------------------------------ Distribution mode
+  // [label, function, [param label, key, default], result name]
+  const DIST_DEFS = [
+    ['Normal PD', 'normPD', [['x', 'x', 0], ['σ', 's', 1], ['μ', 'm', 0]], 'p'],
+    ['Normal CD', 'normCD', [['Lower', 'lo', -1], ['Upper', 'up', 1], ['σ', 's', 1], ['μ', 'm', 0]], 'P'],
+    ['Inverse Normal', 'invNorm', [['Area', 'area', 0.5], ['σ', 's', 1], ['μ', 'm', 0]], 'xInv'],
+    ['Binomial PD', 'binomPD', [['x', 'x', 0], ['N', 'N', 10], ['p', 'p', 0.5]], 'p'],
+    ['Binomial CD', 'binomCD', [['x', 'x', 0], ['N', 'N', 10], ['p', 'p', 0.5]], 'P'],
+    ['Poisson PD', 'poissonPD', [['x', 'x', 0], ['λ', 'lam', 1]], 'p'],
+    ['Poisson CD', 'poissonCD', [['x', 'x', 0], ['λ', 'lam', 1]], 'P']
+  ];
+  function distMenu() {
+    return new MenuScreen('Distribution', DIST_DEFS.map(([label, fn, params, out]) => ({
+      label,
+      act: () => {
+        const saved = S.dist[fn] || {};
+        push(new PromptScreen({
+          title: label + (fn.endsWith('CD') && fn !== 'normCD' ? ' (P(X≤x))' : ''),
+          items: params.map(([l, key, def]) => ({ label: l + '=', value: saved[key] !== undefined ? saved[key] : def })),
+          onDone: vals => {
+            S.dist[fn] = Object.fromEntries(params.map(([, key], i) => [key, vals[i]]));
+            const rows = params.map(([l], i) => [l, numHTML(vals[i], { decimal: true })]);
+            try {
+              const v = E.finalize(X.DIST[fn](...vals));
+              setAns(v);
+              rows.push([`<b>${out}=</b>`, `<b>${numHTML(v, { decimal: true })}</b>`]);
+            } catch (e) { rows.push([`<b>${errType(e)}</b>`, '']); }
+            save();
+            push(new ListScreen(label, rows, { sel: rows.length - 1, hint: 'AC: back · Ans=result' }));
+          }
+        }));
+      }
+    })), { one: true });
+  }
+
+  // ------------------------------------------------------------ Inequality mode
+  const INEQ_OPS = [['>', '&gt;'], ['<', '&lt;'], ['>=', '≥'], ['<=', '≤']];
+  const opSym = op => INEQ_OPS.find(o => o[0] === op)[1];
+  const polyTemplate = n => ['ax²+bx+c', 'ax³+bx²+cx+d', 'ax⁴+bx³+cx²+dx+e'][n - 2];
+  function ineqCoef() {
+    const q = S.ineq;
+    if (!q.coef[q.n] || q.coef[q.n].length !== q.n + 1) q.coef[q.n] = new Array(q.n + 1).fill(0);
+    return q.coef[q.n];
+  }
+  function ineqGrid() {
+    const c = ineqCoef();
+    return new GridScreen({
+      title: polyTemplate(S.ineq.n) + opSym(S.ineq.op) + '0', hint: '[=] solve',
+      cols: c.map((_, i) => 'abcde'[i]), dir: 'right', index: false,
+      rows: () => 1, get: (r, j) => c[j], set: (r, j, v) => { c[j] = v; },
+      onExe: () => solveIneq(), onOptn: () => push(ineqTypeMenu()), footHint: 'OPTN: type'
+    });
+  }
+  function ineqTypeMenu() {
+    return new MenuScreen('Inequality: Degree', [2, 3, 4].map(n => ({
+      label: polyTemplate(n), k: String(n),
+      act: () => push(new MenuScreen(polyTemplate(n) + ' ? 0', INEQ_OPS.map(([op, sym], i) => ({
+        label: polyTemplate(n) + sym + '0',
+        act: () => { S.ineq.n = n; S.ineq.op = op; U.stack.length = 1; setBase(ineqGrid()); save(); }
+      })), { one: true }))
+    })), { one: true });
+  }
+  function solveIneq() {
+    const c = ineqCoef().slice();
+    let res;
+    try { res = X.solveInequality(c, S.ineq.op); } catch (e) { push(new ListScreen('Inequality', [[errType(e), 'a ≠ 0 required']])); return; }
+    const exact = c.length === 3 ? quadRootsHTML(c) : null;
+    const num = v => {
+      const hit = exact && exact.find(r => !r.im && Math.abs(r.v - v) < 1e-9 * Math.max(1, Math.abs(v)));
+      return hit ? hit.h : numHTML(v);
+    };
+    let rows;
+    if (res.all) rows = [['All Real Numbers', '']];
+    else if (res.none) rows = [['No Solution', '']];
+    else rows = res.parts.map(pt => {
+      const lt = incl => (incl ? '≤' : '&lt;');
+      let txt;
+      if (pt.lo === pt.hi) txt = `<i>x</i>=${num(pt.lo)}`;
+      else if (pt.lo === -Infinity) txt = `<i>x</i>${lt(pt.hiIncl)}${num(pt.hi)}`;
+      else if (pt.hi === Infinity) txt = `${num(pt.lo)}${lt(pt.loIncl)}<i>x</i>`;
+      else txt = `${num(pt.lo)}${lt(pt.loIncl)}<i>x</i>${lt(pt.hiIncl)}${num(pt.hi)}`;
+      return [txt, ''];
+    });
+    push(new ListScreen(polyTemplate(S.ineq.n) + opSym(S.ineq.op) + '0', rows, { hint: 'AC: edit' }));
+  }
+
+  // ------------------------------------------------------------ Ratio mode
+  function ratioMenu() {
+    const run = (kind, labels) => () => {
+      const r = S.ratio;
+      push(new PromptScreen({
+        title: kind === 'x3' ? 'A:B = X:D' : 'A:B = C:X',
+        items: labels.map((l, i) => ({ label: l + '=', value: r.vals[i] })),
+        onDone: vals => {
+          r.kind = kind; r.vals = vals;
+          const rows = labels.map((l, i) => [l, numHTML(vals[i])]);
+          try {
+            const v = E.finalize(X.ratio(kind, vals[0], vals[1], vals[2]));
+            setAns(v);
+            rows.push(['<b>X=</b>', `<b>${numHTML(v)}</b>`]);
+          } catch (e) { rows.push([`<b>${errType(e)}</b>`, '']); }
+          save();
+          push(new ListScreen(kind === 'x3' ? 'A:B = X:D' : 'A:B = C:X', rows, { sel: rows.length - 1 }));
+        }
+      }));
+    };
+    return new MenuScreen('Ratio', [
+      { label: 'A:B = X:D', act: run('x3', ['A', 'B', 'D']) },
+      { label: 'A:B = C:X', act: run('x4', ['A', 'B', 'C']) }
+    ], { one: true, sel: S.ratio.kind === 'x4' ? 1 : 0 });
+  }
+
   // ------------------------------------------------------------ modes
   function makeBase(m) {
     if (m === 'STAT') return statGrid();
     if (m === 'TABLE') return new TableScreen();
     if (m === 'EQN') return eqnGrid();
+    if (m === 'DIST') return distMenu();
+    if (m === 'INEQ') return ineqGrid();
+    if (m === 'RATIO') return ratioMenu();
+    if (['CMPLX', 'BASE', 'MATRIX', 'VECTOR'].includes(m)) return U.cx[m] || (U.cx[m] = new CompScreen(m));
     if (!U.comp) U.comp = new CompScreen();
     return U.comp;
   }
@@ -769,19 +1040,26 @@
     U.stack = [makeBase(m)];
     if (m === 'STAT' && !S.stat.x.length) push(statTypeMenu());
     if (m === 'EQN') push(eqnTypeMenu());
+    if (m === 'INEQ') push(ineqTypeMenu());
+    if ((m === 'MATRIX' && !Object.keys(S.mats).length) || (m === 'VECTOR' && !Object.keys(S.vcts).length)) {
+      const t = m === 'MATRIX' ? 'mat' : 'vct';
+      push(pickName('Define ' + (t === 'mat' ? 'Matrix' : 'Vector'), t, n => defineMatVct(t, n)));
+    }
     save();
   }
-  const MODE_LABEL = { COMP: '', STAT: 'STAT', TABLE: 'TABLE', EQN: 'EQN' };
+  const MODES = [
+    ['COMP', 'Calculate', ''], ['CMPLX', 'Complex', 'CMPLX'], ['BASE', 'Base-N', 'BASE'], ['MATRIX', 'Matrix', 'MAT'],
+    ['VECTOR', 'Vector', 'VCT'], ['STAT', 'Statistics', 'STAT'], ['DIST', 'Distribution', 'DIST'], ['TABLE', 'Table', 'TABLE'],
+    ['EQN', 'Equation', 'EQN'], ['INEQ', 'Inequality', 'INEQ'], ['RATIO', 'Ratio', 'RATIO']
+  ];
+  const MODE_LABEL = Object.fromEntries(MODES.map(([m, , l]) => [m, l]));
 
   function openModeMenu() {
     if (top().isModeMenu) { pop(); return; }
     while (U.stack.length > 1) U.stack.pop();
-    const m = new MenuScreen('MENU', [
-      { label: 'Calculate', act: () => setMode('COMP') },
-      { label: 'Statistics', act: () => setMode('STAT') },
-      { label: 'Table', act: () => setMode('TABLE') },
-      { label: 'Equation', act: () => setMode('EQN') }
-    ], { one: true, sel: ['COMP', 'STAT', 'TABLE', 'EQN'].indexOf(S.mode) });
+    const m = new MenuScreen('MENU', MODES.map(([mode, label], i) => ({
+      label, k: i < 9 ? String(i + 1) : '', act: () => setMode(mode)
+    })), { one: false, sel: MODES.findIndex(x => x[0] === S.mode) });
     m.isModeMenu = true;
     push(m);
   }
@@ -809,6 +1087,7 @@
         { label: 'Sci (significant digits)', act: () => push(digitsMenu('Sci', 0, 9, d => { st.fmt = { t: 'sci', n: d }; })) },
         { label: 'Norm', act: () => push(digitsMenu('Norm', 1, 2, d => { st.fmt = { t: 'norm', n: d }; })) }
       ], { one: true })) },
+      { label: 'Complex Result: ' + (S.cfmt === 'polar' ? 'r∠θ' : 'a+bi'), act: () => push(choice('Complex Result', [['a+bi', 'rect'], ['r∠θ', 'polar']], S.cfmt, v => { S.cfmt = v; })) },
       { label: 'Fraction Result: ' + (st.frac === 'abc' ? 'ab/c' : 'd/c'), act: () => push(choice('Fraction Result', [['ab/c (mixed)', 'abc'], ['d/c (improper)', 'dc']], st.frac, v => { st.frac = v; })) },
       { label: 'Key Haptics: ' + (st.haptic ? 'On' : 'Off'), act: () => push(choice('Key Haptics', [['On', true], ['Off', false]], st.haptic, v => { st.haptic = v; })) },
       { label: 'Reset…', act: () => { pop(); openReset(); } }
@@ -822,11 +1101,14 @@
     push(new MenuScreen('RESET', [
       { label: 'Setup Data', act: () => confirm('Setup Data', () => { S.settings = defaultSettings(); }) },
       { label: 'Variable Memory', act: () => confirm('Variables', () => { S.vars = freshVars(); S.ans = 0; S.preAns = 0; }) },
-      { label: 'Calc History', act: () => confirm('History', () => { S.history = []; if (U.comp) U.comp.hist = -1; }) },
+      { label: 'Calc History', act: () => confirm('History', () => { S.history = []; S.histX = {}; if (U.comp) U.comp.hist = -1; }) },
+      { label: 'Matrices & Vectors', act: () => confirm('Matrices & Vectors', () => { S.mats = {}; S.vcts = {}; S.matAns = null; S.vctAns = null; }) },
       { label: 'Initialize All', act: () => confirm('Everything', () => {
         S.settings = defaultSettings(); S.vars = freshVars(); S.ans = 0; S.preAns = 0; S.history = [];
         S.stat = { type: '1', x: [], y: [] }; S.table = { f: [], g: [], start: 1, end: 5, step: 1 }; S.eqn = { kind: 'sim', n: 2, sim: {}, poly: {} };
-        U.comp = null; S.mode = 'COMP'; U.stack = [makeBase('COMP')];
+        S.base = 'd'; S.cfmt = 'rect'; S.mats = {}; S.vcts = {}; S.matAns = null; S.vctAns = null; S.histX = {};
+        S.dist = {}; S.ineq = { n: 2, op: '>', coef: {} }; S.ratio = { kind: 'x3', vals: [1, 2, 1] };
+        U.comp = null; U.cx = {}; S.mode = 'COMP'; U.stack = [makeBase('COMP')];
       }) }
     ], { one: true }));
   }
@@ -896,7 +1178,14 @@
       ['∫(f,a,b)', 'integral, use x'],
       ['d/dx(f,a)', 'derivative at a'],
       ['Σ(f,a,b)', 'sum for x=a…b'],
-      ['MENU', 'Stat / Table / Equation'],
+      ['MENU', 'all 11 modes'],
+      ['OPTN', 'functions for the current mode'],
+      ['Complex: ENG key', 'types i'],
+      ['Base-N: x² x^ log ln', 'DEC / HEX / BIN / OCT'],
+      ['Base-N: (−) °′″ x⁻¹ sin cos tan', 'hex digits A–F'],
+      ['Matrix/Vector: OPTN', 'define, edit, insert'],
+      ['Matrix x⁻¹ / x²', 'inverse / square'],
+      ['Vector × Vector', 'cross product'],
       ['SHIFT MENU', 'settings (Deg/Rad…)'],
       ['°′″ key', 'DMS input; on result: convert'],
       ['SHIFT °′″', 'prime factorization'],
@@ -956,6 +1245,15 @@
     ans: { l: 'Ans', a: 'ins:Ans', s: ['%', 'ins:pct'], al: ['PreAns', 'ins:PreAns'], c: 'sm' },
     exe: { l: '=', a: 'exe', s: ['≈', 'approx'], c: 'green' }
   };
+  // Keys that change meaning in a mode (only when SHIFT/ALPHA are off): [face, action]
+  const MODE_KEYS = {
+    BASE: {
+      neg: ['A', 'ins:hA'], dms: ['B', 'ins:hB'], inv: ['C', 'ins:hC'], sin: ['D', 'ins:hD'], cos: ['E', 'ins:hE'], tan: ['F', 'ins:hF'],
+      sq: ['DEC', 'base:d'], pow: ['HEX', 'base:h'], log: ['BIN', 'base:b'], ln: ['OCT', 'base:o']
+    },
+    CMPLX: { eng: ['<i>i</i>', 'ins:i'] }
+  };
+  const OVERRIDDEN = [...new Set(Object.values(MODE_KEYS).flatMap(o => Object.keys(o)))];
   const ROWS = [
     ['frac', 'sqrt', 'sq', 'pow', 'log', 'ln'],
     ['neg', 'dms', 'inv', 'sin', 'cos', 'tan'],
@@ -1018,8 +1316,10 @@
     }
     if (act === 'shift') { U.shift = !U.shift; U.alpha = false; render(); return; }
     if (act === 'alpha') { U.alpha = !U.alpha; U.shift = false; render(); return; }
+    const ov = MODE_KEYS[S.mode] && MODE_KEYS[S.mode][id];
     if (U.shift && k.s) act = k.s[1];
     else if (U.alpha && k.al) act = k.al[1];
+    else if (ov) act = ov[1];
     U.shift = U.alpha = false;
     dispatch(act);
   }
@@ -1036,6 +1336,7 @@
       case 'rcl': openRecall(); break;
       case 'hyp': push(new MenuScreen('Hyperbolic', tokItems(['sinh(', 'cosh(', 'tanh(', 'asinh(', 'acosh(', 'atanh(']), { one: false })); break;
       case 'sto': if (top().store) U.sto = true; break;
+      case 'base:d': case 'base:h': case 'base:b': case 'base:o': S.base = act.slice(5); break;
       case 'optn': if (top().optn) top().optn(); else if (top() === U.comp || top() instanceof PromptScreen) openOptn(); break;
       default: top().key(act);
     }
@@ -1051,12 +1352,20 @@
       `<span class="on inv">${st.angle}</span>` +
       (st.fmt.t !== 'norm' ? `<span class="on">${st.fmt.t.toUpperCase()}${st.fmt.n}</span>` : '') +
       '<span class="grow"></span>' +
+      (S.mode === 'BASE' ? `<span class="on inv">${BASE_NAME[S.base]}</span>` : '') +
+      (S.mode === 'CMPLX' && S.cfmt === 'polar' ? '<span class="on">r∠θ</span>' : '') +
       (MODE_LABEL[S.mode] ? `<span class="on">${MODE_LABEL[S.mode]}</span>` : '') +
       (st.io === 'math' ? '<span class="on">Math▲</span>' : '<span class="on">Dec</span>');
     const scr = $('#screen');
     scr.innerHTML = top().html();
     const focus = scr.querySelector('.cur') || scr.querySelector('.sel');
     if (focus) focus.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    OVERRIDDEN.forEach(id => {
+      const b = document.querySelector(`.k[data-k="${id}"]`);
+      const ov = MODE_KEYS[S.mode] && MODE_KEYS[S.mode][id];
+      const face = ov ? ov[0] : K[id].l;
+      if (b && b.dataset.face !== face) { b.innerHTML = face; b.dataset.face = face; b.classList.toggle('modek', !!ov); }
+    });
     document.querySelectorAll('.k.shiftk').forEach(b => b.classList.toggle('lit', U.shift));
     document.querySelectorAll('.k.alphak').forEach(b => b.classList.toggle('lit', U.alpha));
   }
@@ -1098,6 +1407,7 @@
     document.addEventListener('keydown', e => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       let act = /^[0-9]$/.test(e.key) ? 'ins:' + e.key : map[e.key];
+      if (S.mode === 'BASE' && /^[a-fA-F]$/.test(e.key)) act = 'ins:h' + e.key.toUpperCase();
       if (!act) return;
       e.preventDefault();
       dispatch(act);
@@ -1107,7 +1417,7 @@
   // ------------------------------------------------------------ boot
   buildKeys();
   attachInput();
-  if (!['COMP', 'STAT', 'TABLE', 'EQN'].includes(S.mode)) S.mode = 'COMP';
+  if (!MODES.some(m => m[0] === S.mode)) S.mode = 'COMP';
   U.stack = [makeBase(S.mode)];
   if (U.comp && S.history.length) U.comp.hist = S.history.length - 1;
   render();

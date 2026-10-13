@@ -1,6 +1,6 @@
 // Offline cache: everything the app needs is precached on install.
-const CACHE = 'fxcalc-v2';
-const FILES = ['./', 'index.html', 'style.css', 'engine.js', 'app.js', 'manifest.webmanifest',
+const CACHE = 'fxcalc-v3';
+const FILES = ['./', 'index.html', 'style.css', 'engine.js', 'engine-x.js', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
