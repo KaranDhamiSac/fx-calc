@@ -32,4 +32,11 @@ start=$(date +%s)
 adb shell am start -W -n io.github.karandhamisac.fxcalc/.MainActivity
 wait_render 7-fresh-first-launch
 echo "fresh first launch (data cleared) rendered after $(( $(date +%s) - start ))s" | tee -a shots/timing.txt
+# Memory: total app footprint (PSS) including the WebView renderer process
+sleep 5
+{
+  echo "== app process =="; adb shell dumpsys meminfo io.github.karandhamisac.fxcalc | grep -E "TOTAL PSS|TOTAL RSS|Java Heap|Native Heap|Graphics|TOTAL:" | head -12
+  echo "== all processes (fxcalc + webview sandbox) =="; adb shell dumpsys meminfo | grep -iE "fxcalc|sandboxed_process" | head -10
+  echo "== for comparison: system calculator/clock =="; adb shell dumpsys meminfo | grep -iE "deskclock|calculator|launcher" | head -5
+} | tee shots/memory.txt
 adb logcat -d | grep -iE "chromium|console|AndroidRuntime" | tail -100 > shots/logcat.txt || true
