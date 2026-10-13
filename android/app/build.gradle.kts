@@ -28,7 +28,7 @@ abstract class CopyWebAssets : DefaultTask() {
 
 val copyWebAssets = tasks.register<CopyWebAssets>("copyWebAssets") {
     webFiles.from(fileTree(rootDir.parentFile) {
-        include("index.html", "style.css", "engine.js", "engine-x.js", "app.js", "icons/**")
+        include("index.html", "style.css", "engine.js", "engine-x.js", "editor.js", "app.js", "icons/**")
     })
 }
 

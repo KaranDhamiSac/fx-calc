@@ -9,7 +9,7 @@
   // ------------------------------------------------------------ persistent state
   const STORE_KEY = 'fxcalc-v1';
   const freshVars = () => ({ A: 0, B: 0, C: 0, D: 0, E: 0, F: 0, X: 0, Y: 0, M: 0 });
-  const defaultSettings = () => ({ io: 'math', angle: 'D', fmt: { t: 'norm', n: 1 }, frac: 'dc', haptic: true });
+  const defaultSettings = () => ({ io: 'math', angle: 'D', fmt: { t: 'norm', n: 1 }, frac: 'dc', haptic: true, input: 'math', zoom: 1 });
   const S = {
     settings: defaultSettings(),
     vars: freshVars(), ans: 0, preAns: 0, history: [], mode: 'COMP',
@@ -65,8 +65,16 @@
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const fr = (n, d) => `<span class="fr"><span class="fn">${n}</span><span class="fd">${d}</span></span>`;
   const neg = s => String(s).replace(/-/g, MINUS);
+  // Group digits in threes with thin spaces: 3.161 760 458
+  function groupDigits(m) {
+    const sign = m[0] === '-' ? '-' : '', body = sign ? m.slice(1) : m;
+    const [ip, fp] = body.split('.');
+    const gi = ip.replace(/\B(?=(\d{3})+(?!\d))/g, '<span class="gs"></span>');
+    const gf = fp !== undefined ? '.' + fp.replace(/(\d{3})(?=\d)/g, '$1<span class="gs"></span>') : '';
+    return sign + gi + gf;
+  }
   function decHTML(d) {
-    return neg(d.m) + (d.e !== null ? `<span class="x10">×10<sup>${neg(d.e)}</sup></span>` : '');
+    return neg(groupDigits(d.m)) + (d.e !== null ? `<span class="x10">×10<sup>${neg(d.e)}</sup></span>` : '');
   }
   const surdHTML = (k, m) => (k > 1 ? k : '') + `√<span class="rad">${m}</span>`;
   function exactHTML(ex, mixed) {
@@ -94,6 +102,13 @@
     if (!o.decimal) {
       const ex = E.exactForm(v);
       if (ex) return exactHTML(ex, o.mixed);
+      const rs = o.surd2 && E.ratSurd(v);
+      if (rs) {
+        const q = rs.a, b = rs.b;
+        const surd = (Math.abs(b.n) === 1 && b.d === 1 ? '' : (b.d > 1 ? fr(Math.abs(b.n), b.d) : Math.abs(b.n))) + `√<span class="rad">${rs.m}</span>`;
+        const ra = q.d > 1 ? fr(Math.abs(q.n), q.d) : Math.abs(q.n);
+        return (q.n < 0 ? MINUS : '') + ra + (b.n < 0 ? ` ${MINUS} ` : ' + ') + surd;
+      }
     }
     return decHTML(E.fmtDecimal(E.round15(v), o.fmt || S.settings.fmt));
   }
@@ -140,36 +155,18 @@
   }
 
   // ------------------------------------------------------------ expression editor
-  const DISP = { frac: '/', neg: '-' };
-  class Editor {
-    constructor(tokens) { this.t = (tokens || []).slice(); this.c = this.t.length; }
-    insert(k) { if (this.t.length >= 199) return; this.t.splice(this.c, 0, k); this.c++; }
-    del() {
-      if (this.c > 0) { this.t.splice(this.c - 1, 1); this.c--; }
-      else if (this.t.length) this.t.splice(0, 1);
-    }
-    left() { this.c = this.c > 0 ? this.c - 1 : this.t.length; }
-    right() { this.c = this.c < this.t.length ? this.c + 1 : 0; }
-    clear() { this.t = []; this.c = 0; }
-    get empty() { return this.t.length === 0; }
-    html(cursor) {
-      let s = '';
-      this.t.forEach((k, i) => {
-        if (cursor && i === this.c) s += '<span class="cur"></span>';
-        s += esc(DISP[k] || TOK[k].disp);
-      });
-      if (cursor && this.c === this.t.length) s += '<span class="cur"></span>';
-      return s;
-    }
-    // Shared editing keys; returns true if handled.
-    edit(a) {
-      if (a.startsWith('ins:')) { this.insert(a.slice(4)); return true; }
-      if (a === 'left') { this.left(); return true; }
-      if (a === 'right') { this.right(); return true; }
-      if (a === 'del') { this.del(); return true; }
-      return false;
-    }
+  // How single tokens look inside the natural-display editor.
+  const ATOM = {
+    frac: '/', neg: '-', sq: '<span class="nsup">2</span>', cube: '<span class="nsup">3</span>',
+    inv: '<span class="nsup">−1</span>', vX: '<i>x</i>', vY: '<i>y</i>', '*': '×', '/': '÷'
+  };
+  const atomHTML = k => (ATOM[k] !== undefined ? ATOM[k] : esc(TOK[k] ? TOK[k].disp : k));
+  class Editor extends window.MathEditor.Editor {
+    constructor(row) { super(row, { linear: () => S.settings.input === 'line' }); }
+    html(cursor) { return super.html(cursor, atomHTML); }
   }
+  const cloneRow = r => JSON.parse(JSON.stringify(r || []));
+  const linTokens = r => window.MathEditor.linearize(r || []).tokens;
 
   // ------------------------------------------------------------ Calculate screen
   class CompScreen {
@@ -206,7 +203,11 @@
       }
       if (this.kind === 'BASE') return baseHTML(r.value);
       const big = X.isM(r.value) || X.isV(r.value) || X.isC(r.value);
-      return `<div class="result ${big ? 'mid' : ''}">${valueHTML(r.value, r)}</div>`;
+      const o = Object.assign({}, r, { surd2: this.ed.t.some(k => k === 'sqrt(' || k === 'xrt(' || k === 'cbrt(') });
+      const main = valueHTML(r.value, o);
+      const dec = valueHTML(r.value, Object.assign({}, o, { decimal: true }));
+      const second = !r.decimal && main !== dec && r.eng === null && !r.dms ? `<div class="result2">= ${dec}</div>` : '';
+      return `<div class="lines"><div class="result ${big ? 'mid' : ''}">${main}</div>${second}</div>`;
     }
 
     showError(e) {
@@ -220,7 +221,7 @@
     }
     pushHistory(v) {
       const H = this.H;
-      H.push({ t: this.ed.t.slice(), v });
+      H.push({ t: cloneRow(this.ed.row), v });
       if (H.length > 40) H.shift();
       this.hist = H.length - 1;
     }
@@ -276,11 +277,38 @@
       S.vars.M = E.round15(S.vars.M + sign * v);
     }
     startNew(k) {
-      const kind = TOK[k].kind;
+      const kind = TOK[k] ? TOK[k].kind : 'tpl';
       const continues = ['op', 'post', 'pow', 'perm', 'frac', 'logic'].includes(kind) && k !== 'xrt(';
       const prev = this.res && this.res.value;
       const ans = X.isM(prev) ? 'MatAns' : X.isV(prev) ? 'VctAns' : 'Ans';
-      this.ed = new Editor(continues ? [ans, k] : [k]);
+      this.ed = new Editor([]);
+      if (k === 'frac' && S.settings.input !== 'line') {
+        // Fraction after a result: Ans goes on top, cursor waits in the denominator.
+        this.ed.row = [{ T: 'frac', s: [[ans], []] }];
+        this.ed.path = [{ i: 0, s: 1 }]; this.ed.c = 0;
+      } else {
+        if (continues) this.ed.insert(ans);
+        this.ed.insert(k);
+      }
+      this.phase = 'edit';
+    }
+    // Undo / redo of edits (toolbar arrows)
+    remember() {
+      this.undoStack = this.undoStack || [];
+      this.undoStack.push(this.ed.snapshot());
+      if (this.undoStack.length > 100) this.undoStack.shift();
+      this.redoStack = [];
+    }
+    undo() {
+      if (!this.undoStack || !this.undoStack.length) return;
+      (this.redoStack = this.redoStack || []).push(this.ed.snapshot());
+      this.ed.restore(this.undoStack.pop());
+      this.phase = 'edit';
+    }
+    redo() {
+      if (!this.redoStack || !this.redoStack.length) return;
+      this.undoStack.push(this.ed.snapshot());
+      this.ed.restore(this.redoStack.pop());
       this.phase = 'edit';
     }
     showHistory(i) {
@@ -296,11 +324,12 @@
         if (a === 'ac') { this.phase = 'edit'; this.ed.clear(); }
         else if (a === 'left' || a === 'right' || a === 'del') {
           this.phase = 'edit';
-          this.ed.c = Math.min(this.err.pos, this.ed.t.length);
+          this.ed.gotoToken(this.err.pos);
         }
         return;
       }
       if (a.startsWith('ins:')) {
+        this.remember();
         if (this.phase === 'result') this.startNew(a.slice(4));
         else this.ed.insert(a.slice(4));
         return;
@@ -308,21 +337,24 @@
       const r = this.res;
       switch (a) {
         case 'left': case 'right':
-          if (this.phase === 'result') { this.phase = 'edit'; this.ed.c = a === 'left' ? this.ed.t.length : 0; }
+          if (this.phase === 'result') { this.phase = 'edit'; this.ed.path = []; this.ed.c = a === 'left' ? this.ed.row.length : 0; }
           else this.ed.edit(a);
           break;
         case 'up':
+          if (this.phase === 'edit' && this.ed.vertical('up')) break;
           if (this.phase === 'result') this.showHistory(this.hist - 1 >= 0 ? this.hist - 1 : this.hist);
           else if (this.ed.empty && this.H.length) this.showHistory(this.H.length - 1);
           break;
         case 'down':
+          if (this.phase === 'edit' && this.ed.vertical('down')) break;
           if (this.phase === 'result' && this.hist < this.H.length - 1) this.showHistory(this.hist + 1);
           break;
         case 'del':
-          if (this.phase === 'result') { this.phase = 'edit'; this.ed.c = this.ed.t.length; }
-          else this.ed.del();
+          if (this.phase === 'result') { this.phase = 'edit'; this.ed.path = []; this.ed.c = this.ed.row.length; }
+          else { this.remember(); this.ed.del(); }
           break;
         case 'ac':
+          if (!this.ed.empty) this.remember();
           this.ed.clear(); this.phase = 'edit'; this.res = null; this.hist = -1;
           break;
         case 'exe':
@@ -458,6 +490,7 @@
         else { pop(); if (this.o.onCancel) this.o.onCancel(); }
         return;
       }
+      if ((a === 'up' || a === 'down') && this.ed.vertical(a)) return;
       if (a === 'up') { if (this.commit() && this.i > 0) this.i--; return; }
       if (a === 'down') { if (this.commit() && this.i < this.o.items.length - 1) this.i++; return; }
       if (a === 'exe') {
@@ -683,9 +716,10 @@
       this.msg = '';
       if (this.ed.edit(a)) return;
       if (a === 'ac') { this.ed.clear(); return; }
-      if (a === 'up' || a === 'down') { S.table[this.which] = this.ed.t; this.which = this.which === 'f' ? 'g' : 'f'; this.ed = new Editor(S.table[this.which]); return; }
+      if ((a === 'up' || a === 'down') && this.ed.vertical(a)) return;
+      if (a === 'up' || a === 'down') { S.table[this.which] = cloneRow(this.ed.row); this.which = this.which === 'f' ? 'g' : 'f'; this.ed = new Editor(S.table[this.which]); return; }
       if (a === 'exe') {
-        S.table[this.which] = this.ed.t.slice();
+        S.table[this.which] = cloneRow(this.ed.row);
         if (this.which === 'f') {
           if (this.ed.empty) { this.msg = 'Enter f(x)'; return; }
           this.which = 'g'; this.ed = new Editor(S.table.g);
@@ -707,7 +741,7 @@
     showTable() {
       const t = S.table;
       let fN, gN = null;
-      try { fN = E.parse(t.f); if (t.g.length) gN = E.parse(t.g); } catch (e) { this.msg = errType(e); return; }
+      try { fN = E.parse(linTokens(t.f)); if (t.g.length) gN = E.parse(linTokens(t.g)); } catch (e) { this.msg = errType(e); return; }
       if (t.step === 0 || (t.end - t.start) / t.step < 0) { this.msg = 'Range ERROR'; return; }
       const count = Math.floor((t.end - t.start) / t.step + 1e-9) + 1;
       const max = gN ? 30 : 45;
@@ -1080,6 +1114,7 @@
     const st = S.settings;
     const fmtName = f => (f.t === 'norm' ? 'Norm' : f.t === 'fix' ? 'Fix' : 'Sci') + ' ' + f.n;
     push(new MenuScreen('SETUP', [
+      { label: 'Input: ' + (st.input === 'line' ? 'Linear' : 'Textbook (MathI)'), act: () => push(choice('Input', [['Textbook (MathI)', 'math'], ['Linear (LineI)', 'line']], st.input, v => { st.input = v; })) },
       { label: 'Input/Output: ' + (st.io === 'math' ? 'MathO' : 'DecimalO'), act: () => push(choice('Input/Output', [['MathI/MathO (exact)', 'math'], ['MathI/DecimalO', 'dec']], st.io, v => { st.io = v; })) },
       { label: 'Angle Unit: ' + { D: 'Degree', R: 'Radian', G: 'Gradian' }[st.angle], act: () => push(choice('Angle Unit', [['Degree', 'D'], ['Radian', 'R'], ['Gradian', 'G']], st.angle, v => { st.angle = v; })) },
       { label: 'Number Format: ' + fmtName(st.fmt), act: () => push(new MenuScreen('Number Format', [
@@ -1090,6 +1125,7 @@
       { label: 'Complex Result: ' + (S.cfmt === 'polar' ? 'r∠θ' : 'a+bi'), act: () => push(choice('Complex Result', [['a+bi', 'rect'], ['r∠θ', 'polar']], S.cfmt, v => { S.cfmt = v; })) },
       { label: 'Fraction Result: ' + (st.frac === 'abc' ? 'ab/c' : 'd/c'), act: () => push(choice('Fraction Result', [['ab/c (mixed)', 'abc'], ['d/c (improper)', 'dc']], st.frac, v => { st.frac = v; })) },
       { label: 'Key Haptics: ' + (st.haptic ? 'On' : 'Off'), act: () => push(choice('Key Haptics', [['On', true], ['Off', false]], st.haptic, v => { st.haptic = v; })) },
+      { label: 'Help (key guide)', act: () => { pop(); openHelp(); } },
       { label: 'Reset…', act: () => { pop(); openReset(); } }
     ], { one: true }));
   }
@@ -1186,65 +1222,72 @@
       ['Matrix/Vector: OPTN', 'define, edit, insert'],
       ['Matrix x⁻¹ / x²', 'inverse / square'],
       ['Vector × Vector', 'cross product'],
-      ['SHIFT MENU', 'settings (Deg/Rad…)'],
+      ['⚙ key', 'settings (Deg/Rad…)'],
+      ['SHIFT ⚙', 'CATALOG of every function'],
+      ['Toolbar chips', 'tap DEG / FRAC / NORM to change'],
+      ['Fraction key', 'stacked fraction, ▼ to denominator'],
       ['°′″ key', 'DMS input; on result: convert'],
       ['SHIFT °′″', 'prime factorization'],
       ['SHIFT 7 / 8', 'constants / conversions'],
-      ['CATALOG', 'every function by category']
+      ['SHIFT DEL', 'undo']
     ];
     push(new ListScreen('HELP', rows, { isMenu: true }));
   }
 
   // ------------------------------------------------------------ keypad definition
   // l: label, a: action, s: [shiftLabel, shiftAction], al: [alphaLabel, alphaAction], c: css classes
+  // l: face, a: action, s: [SHIFT label, action], al: [ALPHA label, action], c: css classes.
+  // Layout and labels follow the fx-991EX keyboard.
+  const BOX = '<span class="bx"></span>', SBOX = '<span class="bx s"></span>';
   const K = {
-    shift: { l: 'SHIFT', a: 'shift', c: 'shiftk' },
-    alpha: { l: 'ALPHA', a: 'alpha', c: 'alphak' },
-    menu: { l: 'MENU', a: 'menu', s: ['SETUP', 'setup'], c: 'sm' },
-    catalog: { l: 'CATALOG', a: 'catalog', s: ['HELP', 'help'], c: 'sm' },
+    shift: { l: 'SHIFT', a: 'shift', c: 'shiftk sm' },
+    alpha: { l: 'ALPHA', a: 'alpha', c: 'alphak sm' },
+    menu: { l: 'MENU', a: 'menu', c: 'sm' },
+    setup: { l: '<svg viewBox="0 0 24 24" width="1.25em" height="1.25em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>', a: 'setup', s: ['CATALOG', 'catalog'], c: 'sm' },
     optn: { l: 'OPTN', a: 'optn', c: 'sm' },
     calc: { l: 'CALC', a: 'calc', s: ['SOLVE', 'solve'], al: ['=', 'ins:='], c: 'sm' },
-    integ: { l: '∫▫', a: 'ins:integ(', s: ['d/dx', 'ins:deriv('] },
-    x: { l: '<i>x</i>', a: 'ins:vX', s: ['Σ', 'ins:sum('], al: ['∏', 'ins:prod('] },
-    frac: { l: '▫/▫', a: 'ins:frac' },
-    sqrt: { l: '√▫', a: 'ins:sqrt(', s: ['∛', 'ins:cbrt('] },
-    sq: { l: '<i>x</i><sup>2</sup>', a: 'ins:sq', s: ['x³', 'ins:cube'] },
-    pow: { l: '<i>x</i><sup>▫</sup>', a: 'ins:^(', s: ['ˣ√', 'ins:xrt('] },
-    log: { l: 'log', a: 'ins:log(', s: ['10ˣ', 'ins:p10('] },
-    ln: { l: 'ln', a: 'ins:ln(', s: ['eˣ', 'ins:exp('] },
-    neg: { l: '(−)', a: 'ins:neg', al: ['A', 'ins:vA'] },
-    dms: { l: '°′″', a: 'dms', s: ['FACT', 'fact'], al: ['B', 'ins:vB'] },
-    inv: { l: '<i>x</i><sup>−1</sup>', a: 'ins:inv', s: ['x!', 'ins:fact'], al: ['C', 'ins:vC'] },
-    sin: { l: 'sin', a: 'ins:sin(', s: ['sin⁻¹', 'ins:asin('], al: ['D', 'ins:vD'] },
-    cos: { l: 'cos', a: 'ins:cos(', s: ['cos⁻¹', 'ins:acos('], al: ['E', 'ins:vE'] },
-    tan: { l: 'tan', a: 'ins:tan(', s: ['tan⁻¹', 'ins:atan('], al: ['F', 'ins:vF'] },
+    integ: { l: `<span class="fi">∫</span><span class="lims">${SBOX}${SBOX}</span>${BOX}`, a: 'ins:integ(', s: [`<span class="dd">d/d<i>x</i></span>${SBOX}`, 'ins:deriv('] },
+    x: { l: '<i class="xv">x</i>', a: 'ins:vX', s: [`Σ${SBOX}`, 'ins:sum('], al: [`Π${SBOX}`, 'ins:prod('] },
+    frac: { l: `<span class="kfrac">${BOX}${BOX}</span>`, a: 'ins:frac', s: [`${SBOX}<span class="kfrac s">${SBOX}${SBOX}</span>`, 'ins:mixed'], al: ['÷R', 'ins:divr'] },
+    sqrt: { l: `√${BOX}`, a: 'ins:sqrt(', s: [`<sup>3</sup>√${SBOX}`, 'ins:cbrt('] },
+    sq: { l: '<i class="xv">x</i><sup>2</sup>', a: 'ins:sq', s: ['<i>x</i><sup>3</sup>', 'ins:cube'], al: ['mod', 'ins:mod'] },
+    pow: { l: `<i class="xv">x</i><sup>${BOX}</sup>`, a: 'ins:^(', s: [`<sup>${SBOX}</sup>√${SBOX}`, 'ins:xrt('], al: ['cot', 'ins:cot('] },
+    log: { l: `log<sub>${BOX}</sub>${BOX}`, a: 'ins:logab', s: [`10<sup>${SBOX}</sup>`, 'ins:p10('], al: ['cot<sup>-1</sup>', 'ins:acot('] },
+    ln: { l: 'ln', a: 'ins:ln(', s: [`<i>e</i><sup>${SBOX}</sup>`, 'ins:exp('] },
+    neg: { l: '(−)', a: 'ins:neg', s: ['log', 'ins:log('], al: ['A', 'ins:vA'] },
+    dms: { l: '°,,,', a: 'dms', s: ['FACT', 'fact'], al: ['B', 'ins:vB'] },
+    inv: { l: '<i class="xv">x</i><sup>-1</sup>', a: 'ins:inv', s: ['<i>x</i>!', 'ins:fact'], al: ['C', 'ins:vC'] },
+    sin: { l: 'sin', a: 'ins:sin(', s: ['sin<sup>-1</sup>', 'ins:asin('], al: ['D', 'ins:vD'] },
+    cos: { l: 'cos', a: 'ins:cos(', s: ['cos<sup>-1</sup>', 'ins:acos('], al: ['E', 'ins:vE'] },
+    tan: { l: 'tan', a: 'ins:tan(', s: ['tan<sup>-1</sup>', 'ins:atan('], al: ['F', 'ins:vF'] },
     sto: { l: 'STO', a: 'sto', s: ['RECALL', 'rcl'], c: 'sm' },
-    eng: { l: 'ENG', a: 'eng', s: ['←ENG', 'engL'], c: 'sm' },
+    eng: { l: 'ENG', a: 'eng', s: ['∠', 'ins:∠'], al: ['<i>i</i>', 'ins:i'], c: 'sm' },
     lp: { l: '(', a: 'ins:(', s: ['Abs', 'ins:abs('] },
-    rp: { l: ')', a: 'ins:)', s: [',', 'ins:,'], al: ['X', 'ins:vX'] },
-    sd: { l: 'S⇔D', a: 'sd', s: ['a<sup>b</sup>/c', 'mixed'], al: ['Y', 'ins:vY'], c: 'sm' },
+    rp: { l: ')', a: 'ins:)', s: [',', 'ins:,'], al: ['<i>x</i>', 'ins:vX'] },
+    sd: { l: 'S⇔D', a: 'sd', s: ['a<sup>b</sup>/<sub>c</sub>⇔<sup>d</sup>/<sub>c</sub>', 'mixed'], al: ['<i>y</i>', 'ins:vY'], c: 'sm' },
     mplus: { l: 'M+', a: 'mplus', s: ['M−', 'mminus'], al: ['M', 'ins:vM'] },
     n7: { l: '7', a: 'ins:7', s: ['CONST', 'const'], c: 'num' },
     n8: { l: '8', a: 'ins:8', s: ['CONV', 'conv'], c: 'num' },
     n9: { l: '9', a: 'ins:9', s: ['RESET', 'reset'], c: 'num' },
-    del: { l: 'DEL', a: 'del', c: 'red' },
-    ac: { l: 'AC', a: 'ac', c: 'red' },
-    n4: { l: '4', a: 'ins:4', s: ['Int', 'ins:int('], c: 'num' },
-    n5: { l: '5', a: 'ins:5', s: ['Intg', 'ins:intg('], c: 'num' },
-    n6: { l: '6', a: 'ins:6', s: ['hyp', 'hyp'], c: 'num' },
+    del: { l: 'DEL', a: 'del', s: ['UNDO', 'undo'], c: 'red' },
+    ac: { l: 'AC', a: 'ac', al: ['CLRv', 'clrv'], c: 'red' },
+    n4: { l: '4', a: 'ins:4', s: ['MATRIX', 'mode:MATRIX'], c: 'num' },
+    n5: { l: '5', a: 'ins:5', s: ['VECTOR', 'mode:VECTOR'], c: 'num' },
+    n6: { l: '6', a: 'ins:6', s: ['STAT', 'mode:STAT'], c: 'num' },
     mul: { l: '×', a: 'ins:*', s: ['nPr', 'ins:P'], al: ['GCD', 'ins:gcd('], c: 'op' },
     div: { l: '÷', a: 'ins:/', s: ['nCr', 'ins:C'], al: ['LCM', 'ins:lcm('], c: 'op' },
-    n1: { l: '1', a: 'ins:1', c: 'num' },
-    n2: { l: '2', a: 'ins:2', c: 'num' },
-    n3: { l: '3', a: 'ins:3', c: 'num' },
-    add: { l: '+', a: 'ins:+', s: ['Pol', 'ins:pol('], c: 'op' },
-    sub: { l: '−', a: 'ins:-', s: ['Rec', 'ins:rec('], c: 'op' },
+    n1: { l: '1', a: 'ins:1', s: ['BASE', 'mode:BASE'], c: 'num' },
+    n2: { l: '2', a: 'ins:2', s: ['CMPLX', 'mode:CMPLX'], c: 'num' },
+    n3: { l: '3', a: 'ins:3', s: ['EQN', 'mode:EQN'], c: 'num' },
+    add: { l: '+', a: 'ins:+', s: ['Pol', 'ins:pol('], al: ['Ceil', 'ins:ceil('], c: 'op' },
+    sub: { l: '−', a: 'ins:-', s: ['Rec', 'ins:rec('], al: ['Floor', 'ins:floor('], c: 'op' },
     n0: { l: '0', a: 'ins:0', s: ['Rnd', 'ins:rnd('], c: 'num' },
-    dot: { l: '.', a: 'ins:.', s: ['Ran#', 'ins:Ran#'], al: ['RanInt', 'ins:ranint('], c: 'num' },
-    exp: { l: '×10<sup><i>x</i></sup>', a: 'ins:EXP', s: ['π', 'ins:pi'], al: ['e', 'ins:e'] },
-    ans: { l: 'Ans', a: 'ins:Ans', s: ['%', 'ins:pct'], al: ['PreAns', 'ins:PreAns'], c: 'sm' },
-    exe: { l: '=', a: 'exe', s: ['≈', 'approx'], c: 'green' }
+    dot: { l: '•', a: 'ins:.', s: ['Ran#', 'ins:Ran#'], al: ['RanInt', 'ins:ranint('], c: 'num' },
+    exp: { l: '×10<sup><i>x</i></sup>', a: 'ins:EXP', s: ['π', 'ins:pi'], al: ['<i>e</i>', 'ins:e'], c: 'num' },
+    ans: { l: 'Ans', a: 'ins:Ans', s: ['%', 'ins:pct'], al: ['PreAns', 'ins:PreAns'], c: 'num' },
+    exe: { l: '=', a: 'exe', s: ['', 'approx'], c: 'green' }
   };
+
   // Keys that change meaning in a mode (only when SHIFT/ALPHA are off): [face, action]
   const MODE_KEYS = {
     BASE: {
@@ -1279,10 +1322,13 @@
     ['shift', 'alpha'].forEach(id => topBlock.appendChild(keyCell(id)));
     const dpad = document.createElement('div');
     dpad.className = 'dpad';
-    dpad.innerHTML = '<button class="up" data-nav="up" aria-label="up">▲</button><button class="dn" data-nav="down" aria-label="down">▼</button>' +
-      '<button class="lf" data-nav="left" aria-label="left">◀</button><button class="rt" data-nav="right" aria-label="right">▶</button><div class="hub"></div>';
+    const chev = d => `<svg viewBox="0 0 24 24"><path d="${d}"/></svg>`;
+    dpad.innerHTML = `<button class="up" data-nav="up" aria-label="up">${chev('M6 15l6-6 6 6')}</button>` +
+      `<button class="dn" data-nav="down" aria-label="down">${chev('M6 9l6 6 6-6')}</button>` +
+      `<button class="lf" data-nav="left" aria-label="left">${chev('M15 6l-6 6 6 6')}</button>` +
+      `<button class="rt" data-nav="right" aria-label="right">${chev('M9 6l6 6-6 6')}</button><div class="hub"></div>`;
     topBlock.appendChild(dpad);
-    ['menu', 'catalog', 'optn', 'calc', 'integ', 'x'].forEach(id => topBlock.appendChild(keyCell(id)));
+    ['menu', 'setup', 'optn', 'calc', 'integ', 'x'].forEach(id => topBlock.appendChild(keyCell(id)));
     keys.appendChild(topBlock);
     ROWS.forEach(r => {
       const row = document.createElement('div');
@@ -1338,24 +1384,51 @@
       case 'sto': if (top().store) U.sto = true; break;
       case 'base:d': case 'base:h': case 'base:b': case 'base:o': S.base = act.slice(5); break;
       case 'optn': if (top().optn) top().optn(); else if (top() === U.comp || top() instanceof PromptScreen) openOptn(); break;
-      default: top().key(act);
+      case 'undo': case 'redo': if (top()[act]) top()[act](); break;
+      case 'clrv': push(new MenuScreen('Clear all variables?', [
+        { label: 'Yes', act: () => { S.vars = freshVars(); S.ans = 0; S.preAns = 0; save(); popMenus(); } },
+        { label: 'Cancel', act: () => popMenus() }
+      ], { one: true, sel: 1 })); break;
+      case 'angle': S.settings.angle = { D: 'R', R: 'G', G: 'D' }[S.settings.angle]; break;
+      case 'io': S.settings.io = S.settings.io === 'math' ? 'dec' : 'math'; if (top().res) top().res.decimal = S.settings.io === 'dec'; break;
+      case 'fmt': openSetup(); top().choose(3); break;
+      case 'zoomin': case 'zoomout':
+        S.settings.zoom = Math.max(0.7, Math.min(1.6, +(S.settings.zoom + (act === 'zoomin' ? 0.1 : -0.1)).toFixed(1)));
+        break;
+      default:
+        if (act && act.startsWith('mode:')) { setMode(act.slice(5)); break; }
+        if (act) top().key(act);
     }
     afterAction();
   }
   function afterAction() { render(); save(); }
 
+  const ICON = {
+    zoomout: '<svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M8 10.5h5M15.5 15.5 20 20"/></svg>',
+    zoomin: '<svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M8 10.5h5M10.5 8v5M15.5 15.5 20 20"/></svg>',
+    undo: '<svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5M4 12h11a5 5 0 0 1 0 10h-2"/></svg>',
+    redo: '<svg viewBox="0 0 24 24"><path d="m15 7 5 5-5 5M20 12H9a5 5 0 0 0 0 10h2"/></svg>'
+  };
   function render() {
     const st = S.settings;
-    const ind = (on, t) => `<span class="${on ? 'on' : 'off'}">${t}</span>`;
+    const chip = (act, txt, cls) => `<button class="chip ${cls || ''}" data-act="${act}">${txt}</button>`;
+    const fmt = st.fmt.t === 'norm' ? 'NORM' : st.fmt.t.toUpperCase() + ' ' + st.fmt.n;
+    const t = top(), canUndo = !!(t.undoStack && t.undoStack.length), canRedo = !!(t.redoStack && t.redoStack.length);
     $('#status').innerHTML =
-      ind(U.shift, 'S') + ind(U.alpha, 'A') + ind(S.vars.M !== 0, 'M') + ind(U.sto, 'STO') +
-      `<span class="on inv">${st.angle}</span>` +
-      (st.fmt.t !== 'norm' ? `<span class="on">${st.fmt.t.toUpperCase()}${st.fmt.n}</span>` : '') +
+      chip('angle', { D: 'DEG', R: 'RAD', G: 'GRA' }[st.angle], 'pill') +
+      chip('io', st.io === 'math' ? 'FRAC' : 'DECI', 'pill') +
+      (U.shift ? '<span class="badge s">S</span>' : '') + (U.alpha ? '<span class="badge a">A</span>' : '') +
+      (U.sto ? '<span class="badge sto">STO</span>' : '') +
+      chip('fmt', fmt, 'plain') +
+      (S.vars.M !== 0 && typeof S.vars.M === 'number' ? '<span class="flag">M</span>' : '') +
+      (S.mode === 'BASE' ? `<span class="flag">${BASE_NAME[S.base].toUpperCase()}</span>` : '') +
+      (MODE_LABEL[S.mode] ? `<span class="flag">${MODE_LABEL[S.mode]}</span>` : '') +
       '<span class="grow"></span>' +
-      (S.mode === 'BASE' ? `<span class="on inv">${BASE_NAME[S.base]}</span>` : '') +
-      (S.mode === 'CMPLX' && S.cfmt === 'polar' ? '<span class="on">r∠θ</span>' : '') +
-      (MODE_LABEL[S.mode] ? `<span class="on">${MODE_LABEL[S.mode]}</span>` : '') +
-      (st.io === 'math' ? '<span class="on">Math▲</span>' : '<span class="on">Dec</span>');
+      chip('zoomout', ICON.zoomout, 'icon') + chip('zoomin', ICON.zoomin, 'icon') +
+      chip('undo', ICON.undo, 'icon' + (canUndo ? '' : ' dim')) + chip('redo', ICON.redo, 'icon' + (canRedo ? '' : ' dim'));
+    document.body.classList.toggle('mod-shift', U.shift);
+    document.body.classList.toggle('mod-alpha', U.alpha);
+    document.documentElement.style.setProperty('--zoom', st.zoom || 1);
     const scr = $('#screen');
     scr.innerHTML = top().html();
     const focus = scr.querySelector('.cur') || scr.querySelector('.sel');
@@ -1391,6 +1464,14 @@
     ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => document.addEventListener(ev, stop));
     document.addEventListener('contextmenu', e => e.preventDefault());
 
+    $('#status').addEventListener('pointerdown', e => {
+      const b = e.target.closest('[data-act]');
+      if (!b) return;
+      e.preventDefault();
+      haptic();
+      U.shift = U.alpha = false;
+      dispatch(b.dataset.act);
+    });
     $('#lcd').addEventListener('click', e => {
       const t = e.target.closest('[data-tap]');
       if (t && top().tap) { haptic(); top().tap(t.dataset.tap); afterAction(); }

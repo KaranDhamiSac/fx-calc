@@ -26,6 +26,8 @@
   def('^(', '^(', 'pow');
   def('xrt(', 'ˣ√(', 'pow');
   def('P', 'P', 'perm');
+  def('mod', ' mod ', 'op');
+  def('divr', '÷R', 'op');
   def('C', 'C', 'perm');
 
   [
@@ -38,7 +40,8 @@
     ['pol', 'Pol('], ['rec', 'Rec('],
     ['int', 'Int('], ['intg', 'Intg('], ['rnd', 'Rnd('],
     ['gcd', 'GCD('], ['lcm', 'LCM('], ['ranint', 'RanInt#('],
-    ['integ', '∫('], ['deriv', 'd/dx('], ['sum', 'Σ('], ['prod', '∏(']
+    ['integ', '∫('], ['deriv', 'd/dx('], ['sum', 'Σ('], ['prod', '∏('],
+    ['cot', 'cot('], ['acot', 'cot⁻¹('], ['ceil', 'Ceil('], ['floor', 'Floor(']
   ].forEach(([f, d]) => def(f + '(', d, 'func', { f }));
 
   [
@@ -148,7 +151,7 @@
     }
     function mul() {
       let a = imp();
-      while (peek() === '*' || peek() === '/' || peek() === 'dot') {
+      while (peek() === '*' || peek() === '/' || peek() === 'dot' || peek() === 'mod' || peek() === 'divr') {
         const op = peek(), p = i++;
         a = { k: 'bin', op, a, b: imp(), p };
       }
@@ -375,6 +378,13 @@
           case '-': return chk(a - b, p);
           case '*': return chk(a * b, p);
           case '/': case 'frac': if (b === 0) mathErr(p); return chk(a / b, p);
+          case 'mod': if (b === 0) mathErr(p); return chk(a - b * Math.floor(a / b), p);
+          case 'divr': {
+            if (b === 0 || !isInt(a) || !isInt(b) || a < 0 || b < 0) mathErr(p);
+            const q = Math.floor(a / b), r = a - b * q;
+            ctx.multi = [['Q', q], ['R', r]];
+            return q;
+          }
           case '^(': return chk(powReal(a, b, p), p);
           case 'xrt(': return chk(rootReal(a, b, p), p);
           case 'P': return chk(nPr(a, b, p), p);
@@ -456,6 +466,15 @@
       case 'asin': argc(1); if (Math.abs(x) > 1) mathErr(p); return fromRad(Math.asin(x), u);
       case 'acos': argc(1); if (Math.abs(x) > 1) mathErr(p); return fromRad(Math.acos(x), u);
       case 'atan': argc(1); return fromRad(Math.atan(x), u);
+      case 'cot': {
+        argc(1); checkTrigArg(x, u, p);
+        const k = quarterTurns(x, u);
+        if (k !== null) { if (k % 2 === 0) mathErr(p); return 0; }
+        return chk(1 / tanA(x, u, p), p);
+      }
+      case 'acot': argc(1); return fromRad(Math.PI / 2 - Math.atan(x), u);
+      case 'ceil': argc(1); return Math.ceil(x);
+      case 'floor': argc(1); return Math.floor(x);
       case 'sinh': argc(1); return chk(Math.sinh(x), p);
       case 'cosh': argc(1); return chk(Math.cosh(x), p);
       case 'tanh': argc(1); return Math.tanh(x);
@@ -811,6 +830,26 @@
     return null;
   }
 
+  // v = a + b·√m with small rationals a, b (e.g. 1/3 + 2√2). Only used when the input contained a root.
+  const SQUAREFREE = [2, 3, 5, 6, 7, 10, 11, 13, 14, 15, 17, 19, 21, 22, 23, 26, 29, 30];
+  function ratSurd(v) {
+    if (!isFinite(v) || Math.abs(v) >= 1e6 || isInt(v)) return null;
+    const tol = 1e-12 * Math.max(1, Math.abs(v));
+    for (let q = 1; q <= 6; q++) {
+      for (let ap = 1; ap <= 30 * q; ap++) {
+        for (const p of [ap, -ap]) {
+          if (gcd(p, q) !== 1) continue;
+          for (const m of SQUAREFREE) {
+            const rest = v - p / q * Math.sqrt(m);
+            const f = approxFrac(rest, 100, 1e-9);
+            if (f && f[0] !== 0 && Math.abs(rest - f[0] / f[1]) < tol) return { a: { n: f[0], d: f[1] }, b: { n: p, d: q }, m };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   // Exact quadratic roots for rational coefficients: (A ± B√m)/C, possibly complex.
   function quadExact(a, b, c) {
     const fr = [a, b, c].map(v => approxFrac(v, 10000, 1e-13) || (v === 0 ? [0, 1] : null));
@@ -947,7 +986,7 @@
     TOK, CONV, CONSTS, VARS, CalcError, SYN, MATH, SOLVE_ERR, ARG, mathErr, chk,
     toRad, fromRad, sinA, cosA, tanA, powReal,
     parse, evaluate, finalize, round15, varsIn, solveNumeric, integrate, derivative,
-    solveLinear, polyRoots, approxFrac, exactForm, quadExact, fmtDecimal, fmtEng, engBase,
+    solveLinear, polyRoots, approxFrac, exactForm, ratSurd, quadExact, fmtDecimal, fmtEng, engBase,
     roundDisplay, toDMS, factorize, stats1, stats2, gcd
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

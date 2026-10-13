@@ -53,11 +53,19 @@ test('summation', () => assert.strictEqual(calc('sum( vX , 1 , 1 0 0'), 5050));
 test('Pol(1,1)', () => { const c = ctx(); E.evaluate(E.parse(T('pol( 1 , 1')), c); near(c.multi[1][1], 45); });
 test('unit conversion °F→°C', () => near(calc('2 1 2 cv:F-C'), 100));
 
+test('mod', () => { assert.strictEqual(calc('1 7 mod 5'), 2); assert.strictEqual(calc('neg 7 mod 3'), 2); });
+test('÷R quotient and remainder', () => { const c = ctx(); E.evaluate(E.parse(T('1 7 divr 5')), c); assert.deepStrictEqual(c.multi, [['Q', 3], ['R', 2]]); });
+test('cot / cot⁻¹', () => { assert.strictEqual(calc('cot( 4 5'), 1); assert.strictEqual(calc('cot( 9 0'), 0); assert.strictEqual(calc('acot( 1'), 45); });
+test('Ceil / Floor', () => { assert.strictEqual(calc('ceil( 2 . 1'), 3); assert.strictEqual(calc('floor( neg 2 . 1'), -3); });
+
 // ------------------------------------------------------------ exact display forms
 test('1/3 is a fraction', () => assert.deepStrictEqual(E.exactForm(calc('1 / 3')), { t: 'rat', s: 1, n: 1, d: 3 }));
 test('√8 = 2√2', () => assert.deepStrictEqual(E.exactForm(calc('sqrt( 8')), { t: 'surd', s: 1, k: 2, m: 2, d: 1 }));
 test('sin 45° = √2/2', () => assert.deepStrictEqual(E.exactForm(calc('sin( 4 5')), { t: 'surd', s: 1, k: 1, m: 2, d: 2 }));
 test('acos(0) rad = π/2', () => assert.deepStrictEqual(E.exactForm(calc('acos( 0', { angle: 'R' })), { t: 'pi', s: 1, n: 1, d: 2 }));
+test('1/3 + √8 = 1/3 + 2√2', () => assert.deepStrictEqual(E.ratSurd(1 / 3 + Math.sqrt(8)), { a: { n: 1, d: 3 }, b: { n: 2, d: 1 }, m: 2 }));
+test('golden ratio = 1/2 + √5/2', () => assert.deepStrictEqual(E.ratSurd((1 + Math.sqrt(5)) / 2), { a: { n: 1, d: 2 }, b: { n: 1, d: 2 }, m: 5 }));
+test('π has no rational+surd form', () => assert.strictEqual(E.ratSurd(Math.PI), null));
 test('ln 2 has no exact form', () => assert.strictEqual(E.exactForm(calc('ln( 2')), null));
 test('decimal formatting', () => {
   assert.deepStrictEqual(E.fmtDecimal(1 / 3), { m: '0.3333333333', e: null });

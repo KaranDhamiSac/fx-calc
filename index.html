@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>fx Calc</title>
 <meta name="description" content="Offline Casio-style scientific calculator">
-<meta name="theme-color" content="#16171b">
+<meta name="theme-color" content="#111317">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -17,16 +17,16 @@
 </head>
 <body>
 <div id="app">
-  <div class="brand"><span class="brand-name">fx Calc</span><span class="brand-model">SCIENTIFIC CALCULATOR</span></div>
   <div id="lcd">
-    <div id="status"></div>
     <div id="screen"></div>
   </div>
+  <div id="status"></div>
   <div id="keys"></div>
 </div>
 <label id="haptic" aria-hidden="true"><input type="checkbox" switch></label>
 <script src="engine.js"></script>
 <script src="engine-x.js"></script>
+<script src="editor.js"></script>
 <script src="app.js"></script>
 <script>
   if ('serviceWorker' in navigator) {
